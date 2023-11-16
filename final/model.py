@@ -20,8 +20,103 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 from torch.autograd import Variable
 
-train,test=torch.load("./data/train.pth"),torch.load("./data/test.pth")
-train_loader,test_loader= DataLoader(train, batch_size=5,shuffle=True),DataLoader(test, batch_size=5,shuffle=True)
+ctrl = cooler.Cooler('../data/coolers/H1hESC_hg38_4DNFI1O6IL1Q.mapq_30.2048.cool')
+ref = pysam.FastaFile('../data/hg38.ml.fa')
+
+class TorchDataset(Dataset):
+    def __init__(self, file,fasta,cool,root_dir="./", transform=None):
+        """
+        Arguments:
+            file (string): Path to the file with annotations.
+            root_dir (string): Directory with all the tfr files.
+            transform (callable, optional): Optional transform to be applied
+                on a sample.
+        """
+        # self.landmarks_frame = pd.read_csv(csv_file)
+        super().__init__()
+        self.root_dir = root_dir
+        self.transform = transform
+        # to store dictionary for genomic data
+        self.df_frame=pd.read_csv(file)
+        self.transform=transform
+        self.fasta=fasta
+        self.cooler=cool
+    def one_hot_enc(self,seq):
+        ans=[]
+        for i in seq:
+            if i =="A":
+                ans.append([1.0,0,0,0,0])
+            elif i =="T":
+                ans.append([0,1.0,0,0,0])
+            elif i=="G":
+                ans.append([0,0,1.0,0,0])
+            elif i=="C":
+                ans.append([0,0,0,1.0,0])
+            else:
+                ans.append([0,0,0,0,1.0])
+
+        return np.array(ans).T
+    def flatten(self,mat):
+        return torch.tensor(mat[np.triu_indices(mat.shape[0],2)]).unsqueeze(-1)
+    def K(self,p,q,sigma=1):
+        return np.exp(-((p[0]-q[0])**2+(p[1]-q[1])**2)**.5/(2*sigma**2))
+    def cal_value_l(self,p,b,mat,sigma=10):
+        val,weight=0,0
+        for i in range(max(0,p[0]-b),min(mat.shape[0],p[0])):
+            for j in range(max(0,p[1]-b),min(mat.shape[1],p[1])):
+                w=self.K(p,[i,j],sigma)
+                val+=mat[i,j]*w
+                weight+=w
+        if weight==0:
+            return mat[p[0]-1][p[1]-1]
+        return val/weight
+    def cal_value_r(self,p,b,mat,sigma=10):
+        val,weight=0,0
+        for i in range(max(0,p[0]),min(mat.shape[0],p[0]+b)):
+            for j in range(max(0,p[1]),min(mat.shape[1],p[1]+b)):
+                w=self.K(p,[i,j],sigma)
+                val+=mat[i,j]*w
+                weight+=w
+        if weight==0:
+            return mat[p[0]+1][p[1]+1]
+        return val/weight
+    def fill_mat(self,mat,b=5,sigma=30):
+        # mat=np.array(m, copy=True)
+        d=np.diag(mat)
+        for i in range(mat.shape[0]):
+            if d[i]==0:
+                for j in range(i,mat.shape[0]):
+                    mat[i,j]=self.cal_value_l([i,j],b,mat,sigma)
+                for j in range(i,-1,-1):
+                    mat[i,j]=self.cal_value_l([i,j],b,mat,sigma)
+                for j in range(i,mat.shape[1]):
+                    mat[j,i]=self.cal_value_l([j,i],b,mat,sigma)
+                for j in range(i,-1,-1):
+                    mat[j,i]=self.cal_value_l([j,i],b,mat,sigma)
+        for i in range(mat.shape[0]-1,-1,-1):
+            if d[i]==0:
+                for j in range(i,mat.shape[0]):
+                    mat[i,j]=max(mat[i,j],self.cal_value_r([i,j],b,mat,sigma))
+                for j in range(i,-1,-1):
+                    mat[i,j]=max(mat[i,j],self.cal_value_r([i,j],b,mat,sigma))
+                for j in range(i,mat.shape[1]):
+                    mat[j,i]=max(mat[j,i],self.cal_value_r([j,i],b,mat,sigma))
+                for j in range(i,-1,-1):
+                    mat[j,i]=max(mat[j,i],self.cal_value_r([j,i],b,mat,sigma))
+        return mat
+    def __len__(self):
+        return len(self.df_frame)
+    def __getitem__(self, idx):
+        curr=self.df_frame.iloc[idx,:]
+        X=self.one_hot_enc(self.fasta.fetch(curr["name"],curr["start"],curr["end"]))
+        y=self.flatten(self.fill_mat(self.cooler.matrix(balance=False).fetch((curr["name"],curr["start"],curr["end"])))[32:-32,32:-32])
+        sample=(X,y)
+        return sample
+    
+train,test=TorchDataset("../data/cvsDatasets/train.csv",ref,ctrl),TorchDataset("../data/cvsDatasets/test.csv",ref,ctrl)
+train_loader,test_loader=DataLoader(train, batch_size=5,shuffle=True),DataLoader(test, batch_size=5,shuffle=True)
+
+print("Datasets loaded")
 
 device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(device)
@@ -202,8 +297,9 @@ def test(net,criterion,test_loader,device=torch.device('cuda' if torch.cuda.is_a
 net=Model(5)
 criterion = nn.MSELoss()
 optimizer = optim.SGD(net.parameters(), lr=0.001)
-epochs=1
+epochs=30
 #net, optimizer, criterion,filename,epochs
+print("model training start")
 train_loss_values=train(net, optimizer, criterion,train_loader, epochs,model_name="Akita")
 torch.save(net.state_dict(), "./model.pth")
 
@@ -214,4 +310,3 @@ plt.show()
 print(train_loss_values[-1])
 
 test(net,criterion,test_loader)
-
