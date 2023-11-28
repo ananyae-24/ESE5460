@@ -104,6 +104,8 @@ class TorchDataset(Dataset):
                 ans.append([0,0,0,0,1.0])
 
         return np.array(ans).T
+    def norm(self,y):
+       return (y-300.0)/300.0
     def flatten(self,mat):
         return torch.tensor(mat[np.triu_indices(mat.shape[0],2)]).unsqueeze(-1)
     def K(self,p,q,sigma=1):
@@ -164,10 +166,13 @@ class TorchDataset(Dataset):
         X=X.T
         if self.transform:
             X=self.transform(X)
-        sample=(X,y)
+        c=curr["chip"].split(",")
+        c=np.array([[int(j) for j in c]])
+        # print(c[0])
+        sample=(X,c,y)
         return sample
     
-train,val,test=TorchDataset("../data/cvsDatasets/train.csv",ref,ctrl,transform),TorchDataset("../data/cvsDatasets/val.csv",ref,ctrl),TorchDataset("../data/cvsDatasets/test.csv",ref,ctrl)
+train,val,test=TorchDataset("../data/cvsDatasets/train_chip.csv",ref,ctrl,transform),TorchDataset("../data/cvsDatasets/val_chip.csv",ref,ctrl),TorchDataset("../data/cvsDatasets/test_chip.csv",ref,ctrl)
 train_loader,val_loader,test_loader=DataLoader(train, batch_size=2,shuffle=True),DataLoader(val, batch_size=2,shuffle=True),DataLoader(test, batch_size=2,shuffle=True)
 
 device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -185,7 +190,7 @@ def plot_hic(x,name="hello"):
 from typing import Sequence
 
 class Conv1D_block(nn.Module):
-  def __init__(self,in_channels,out_channels,kernel_size=11,dilation=10,m_kernel=2):
+  def __init__(self,in_channels,out_channels,kernel_size=51,dilation=10,m_kernel=2):
     super().__init__()
     padding=dilation*(kernel_size-1)//2
     self.conv1d=nn.Conv1d(in_channels, out_channels,kernel_size,padding=padding,dilation=dilation)
@@ -274,16 +279,49 @@ class FC(nn.Module):
   def __init__(self,in_f,out_f=5):
     super().__init__()
     self.fc=nn.Linear(in_f,out_f)
-    self.relu=nn.ReLU()
+    self.relu1=nn.ReLU()
   def __call__(self,x):
-    return self.relu(self.fc(x.transpose(-2,-1)))
+    return self.relu1(self.fc(x.transpose(-2,-1)))
 
+class Conv1D_block_chip(nn.Module):
+  def __init__(self,in_channels,out_channels,kernel_size=11,dilation=1):
+    super().__init__()
+    padding=dilation*(kernel_size-1)//2
+    self.conv1d=nn.Conv1d(in_channels, out_channels,kernel_size,padding=padding,dilation=dilation)
+    self.relu1=nn.ReLU()
+    self.bn=nn.BatchNorm1d(out_channels)
+    self.Seq=nn.Sequential(self.conv1d,self.relu1,self.bn)
+  def __call__(self,x):
+    return self.Seq(x)
+class crop(nn.Module):
+  def __init__(self,leave=143):
+    super().__init__()
+    self.leave=leave
+  def __call__(self,x):
+    return x[:,:,self.leave:-self.leave-1]
+class chip_block(nn.Module):
+  def __init__(self,in_dim,out_dim,conv1d=5):
+    super().__init__()
+    layers=[]
+    layers.append(Conv1D_block_chip(in_dim,out_dim))
+    for _ in range(conv1d-1):
+      layers.append(Conv1D_block_chip(out_dim,out_dim))
+    layers.append(crop())
+    self.layers=layers
+    self.Seq=nn.Sequential(*self.layers)
+  def __call__(self,x):
+    return self.Seq(x)
+  
 class Model(nn.Module):
   def __init__(self,in_channels,conv1D_block=11,resNet1d=5,resNet2d=5,out=1,device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')):
     super().__init__()
-    layers=[Conv1D_block(in_channels,96)]
-    for i in range(conv1D_block-1):
-      layers.append(Conv1D_block(96,96))
+    layers1=[Conv1D_block(in_channels,96)]
+    for i in range(conv1D_block-2):
+      layers1.append(Conv1D_block(96,96))
+    self.layers1=layers1
+    self.chip=chip_block(1,96)
+    self.Seq0=nn.Sequential(*self.layers1)
+    layers=[Conv1D_block(96*2,96)]
     for i in range(resNet1d):
       layers.append(ResNet1d(96,96))
     layers.append(one_two(96,48,device=device))
@@ -295,12 +333,12 @@ class Model(nn.Module):
     layers.append(FC(48,out))
     self.layers=layers
     self.Seq=nn.Sequential(*self.layers)
-  def __call__(self,x):
-    # for i in self.layers:
-    #   print(x.shape)
-    #   x=i(x)
+    
+  def __call__(self,x,y):
+    y=self.chip(y)
+    x=self.Seq0(x)
+    x=torch.concat([x,y],-2)
     return self.Seq(x)
-
 import math
 def train(net, optimizer, criterion,train_loader,val_loader,epochs,root="./",model_name="Akita", plot=False,device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')):
     model = net.to(device)
@@ -309,14 +347,14 @@ def train(net, optimizer, criterion,train_loader,val_loader,epochs,root="./",mod
     train_loss_values = []
     validation_values=[]
     T=len(train_loader)*epochs
-    T0=2*T//5
+    T0=3*T//5
     t=0
     
     for epoch in range(epochs):
         total = 0
         running_loss = 0.0
         model.train(True)
-        for i, (X, y) in enumerate(train_loader):
+        for i, (X, c,y) in enumerate(train_loader):
             for op_params in optimizer.param_groups:
               if t<=T0:
                 op_params['lr'] =1e-4+.001
@@ -325,9 +363,10 @@ def train(net, optimizer, criterion,train_loader,val_loader,epochs,root="./",mod
                 op_params['lr'] =1e-6+(.001*math.cos(f*math.pi/2))
             # Move tensors to configured device
             X = X.to(device).float()
+            c=c.to(device).float()
             y = y.to(device).float()
             #Forward Pass
-            outputs = model(X)
+            outputs = model(X,c)
             optimizer.zero_grad()
             loss = criterion(outputs, y)
             loss.backward()
@@ -349,6 +388,7 @@ def train(net, optimizer, criterion,train_loader,val_loader,epochs,root="./",mod
            torch.save(model.state_dict(), "./model_20.pth")
         if running_loss/total<=1e-3 : break
     return (train_loss_values,validation_values)
+  
 
 def test(net,criterion,test_loader,device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')):
     model = net.to(device)
@@ -356,20 +396,20 @@ def test(net,criterion,test_loader,device=torch.device('cuda' if torch.cuda.is_a
     with torch.no_grad():
         total = 0
         running_loss=0.0
-        for i, (X, y) in enumerate(test_loader):
+        for i, (X, c,y) in enumerate(test_loader):
             X = X.to(device).float()
             y = y.to(device).float()
-            outputs = model(X)
+            c=c.to(device).float()
+            outputs = model(X,c)
             loss = criterion(outputs, y)
             running_loss += loss.item()
             total += y.size(0)
-           
+            
         print('Accuracy of the network on the test: {}'.format(running_loss/total))
-        return running_loss/total
 
 net=Model(5)
 criterion = nn.MSELoss()
-optimizer = optim.SGD(net.parameters(), lr=0.001)
+optimizer = optim.Adam(net.parameters(), lr=0.001)
 epochs=30
 #net, optimizer, criterion,filename,epochs
 train_loss_values,validatio_loss=train(net, optimizer, criterion,train_loader,val_loader, epochs,model_name="Akita")
@@ -380,7 +420,7 @@ plt.legend()
 plt.savefig("trainingcurve.png")
 plt.show()
 
-plt.plot(list(range(len(validatio_loss))),validatio_loss,label="val error",color="red")
+plt.plot(list(range(len(validatio_loss))),validatio_loss,label="val error",color="green")
 plt.legend()
 plt.savefig("valcurve.png")
 plt.show()
