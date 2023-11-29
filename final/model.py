@@ -7,6 +7,7 @@ import cooltools
 import cooler
 import cooltools.lib.plotting
 from matplotlib.ticker import EngFormatter
+import torchvision as thv
 
 from matplotlib.colors import LogNorm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
@@ -64,7 +65,27 @@ class RandomComplement():
 
         return complement
 
-import torchvision as thv
+class WeightedMSE():
+    def __init__(self):
+        dim = 448
+        x = torch.abs(torch.arange(dim).unsqueeze(0)-torch.arange(dim).unsqueeze(1))
+        square_weights = self.diagonal_fun(x)
+        self.weigths = square_weights[*torch.triu_indices(*square_weights.shape, 2)].unsqueeze(0).unsqueeze(-1)
+
+        print(self.weigths.shape)
+
+    def diagonal_fun(self, x, max_weight=36):
+        return 1 + max_weight * torch.sin(x/500*torch.pi)
+    
+    def __call__(self, y_pred:torch.Tensor, y_true:torch.Tensor):
+        """
+        Compute weighted mean square error for prediction.
+        Args:
+            y_pred: Predicted labels
+            y_true: True labels
+        """
+        return ((y_true - y_pred)**2 * self.weigths).sum()/y_true.shape[0]
+
 RANDOM_SEED = 42 
 transform = thv.transforms.Compose((
    RandomComplement(((0, 1), (2, 3)), RANDOM_SEED, 0.5)
@@ -368,7 +389,7 @@ def test(net,criterion,test_loader,device=torch.device('cuda' if torch.cuda.is_a
         return running_loss/total
 
 net=Model(5)
-criterion = nn.MSELoss()
+criterion = WeightedMSE()
 optimizer = optim.SGD(net.parameters(), lr=0.001)
 epochs=30
 #net, optimizer, criterion,filename,epochs
