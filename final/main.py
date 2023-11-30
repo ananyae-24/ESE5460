@@ -4,6 +4,7 @@ import cooler
 import pysam
 import torch
 import matplotlib.pyplot as plt
+import numpy as np
 
 import model
 import data
@@ -11,8 +12,9 @@ import training
 
 def main():
     RANDOM_SEED = 42
-    BATCH_SIZE = 2
+    BATCH_SIZE = 2 # (AWS max with/without autocast: 5/9)
     NUM_EPOCHS = 30
+    NUM_WORKERS = 4
     DATA_PATH = '../data'
     USE_CHIP_SEQ = False
     USE_AUTOCAST = False
@@ -42,9 +44,9 @@ def main():
         hic_file,
         USE_CHIP_SEQ
     )
-    train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True)
-    val_loader = DataLoader(val_set, batch_size=BATCH_SIZE, shuffle=True)
-    test_loader = DataLoader(test_set, batch_size=BATCH_SIZE, shuffle=True)
+    train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS)
+    val_loader = DataLoader(val_set, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS)
+    test_loader = DataLoader(test_set, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using {device}")
@@ -68,6 +70,9 @@ def main():
     )
     torch.save(net.state_dict(), "./model.pth")
 
+    np.save('training_loss', np.array(train_loss_values))
+    np.save('validation_loss', np.array(validation_loss))
+
     plt.plot(list(range(len(train_loss_values))),
             train_loss_values, label="training error", color="red")
     plt.legend()
@@ -81,13 +86,14 @@ def main():
     plt.show()
     print(f"last training value {train_loss_values[-1]}")
 
-    training.test(
+    test_loss = training.test(
         net,
         criterion, 
         test_loader,
         USE_AUTOCAST
     )
 
+    print(f"Test loss {test_loss}")
 
 if __name__ == '__main__':
     main()
