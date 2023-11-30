@@ -58,7 +58,7 @@ class TorchDataset(Dataset):
         # one-hot encoding
         word_to_ix = {"A": 0, "T": 1, "G": 2, "C": 3, "N": 4}
         X = [word_to_ix[w] for w in X]
-        X = np.eye(5)[X, :]
+        X = torch.eye(5)[X, :]
         X = X.T
         # apply transforms
         if self.transform:
@@ -87,9 +87,9 @@ class RandomComplement():
 
         complement = torch.zeros_like(x)
         for pair in self.dna_pair_columns:
-            complement[:, :, pair[0]] = x[:, :, pair[1]]
-            complement[:, :, pair[1]] = x[:, :, pair[0]]
+            complement[pair[0], :] = x[pair[1], :]
+            complement[pair[1], :] = x[pair[0], :]
 
-        complement[:, :, 4] = x[:, :, 4]
+        complement[4, :] = x[4 :]
 
         return complement

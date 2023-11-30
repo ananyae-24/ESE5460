@@ -21,7 +21,7 @@ def main():
     genome_file = pysam.FastaFile(f'{DATA_PATH}/hg38.ml.fa')
 
     transform = thv.transforms.Compose((
-        data.RandomComplement(((0, 1), (2, 3)), RANDOM_SEED, 0.5)
+        data.RandomComplement(((0, 1), (2, 3)), RANDOM_SEED, 0.5),
     ))
     train_set = data.TorchDataset(
         f'{DATA_PATH}/cvsDatasets/train_chip.csv',
@@ -37,7 +37,7 @@ def main():
         USE_CHIP_SEQ
     )
     test_set = data.TorchDataset(
-        f'{DATA_PATH}/data/cvsDatasets/test_chip.csv',
+        f'{DATA_PATH}/cvsDatasets/test_chip.csv',
         genome_file,
         hic_file,
         USE_CHIP_SEQ

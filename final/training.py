@@ -5,6 +5,7 @@ from contextlib import nullcontext
 
 def train(net, optimizer, criterion, train_loader, val_loader, epochs, use_autocast, model_name="Akita", plot=False, device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')):
     model = net.to(device)
+    criterion.to(device)
     total_step = len(train_loader)
     overall_step = 0
     train_loss_values = []
@@ -72,6 +73,7 @@ def train(net, optimizer, criterion, train_loader, val_loader, epochs, use_autoc
 
 def test(net, criterion, test_loader, use_autocast, device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')):
     model = net.to(device)
+    criterion.to(device)
     model.eval()
     with torch.no_grad():
         total = 0
@@ -103,9 +105,7 @@ class WeightedMSELoss():
     def __init__(self, dim=448):
         x = torch.abs(torch.arange(dim).unsqueeze(0)-torch.arange(dim).unsqueeze(1))
         square_weights = self.diagonal_fun(x)
-        self.weights = torch.tensor(
-            square_weights[np.triu_indices(x.shape[0], 2)]
-        ).unsqueeze(0).unsqueeze(-1)
+        self.weights = square_weights[np.triu_indices(x.shape[0], 2)].unsqueeze(0).unsqueeze(-1)
 
     def diagonal_fun(self, x, max_weight=36):
         return 1 + max_weight * torch.sin(x/500*torch.pi)
