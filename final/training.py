@@ -14,6 +14,7 @@ def train(net, optimizer, criterion, train_loader, val_loader, epochs, use_autoc
     T0 = 2*T//5
     t = 0
     lr = LearningRateScheduler(T0, T)
+    forward_context = torch.autocast(device_type=device.type) if use_autocast else nullcontext()
 
     for epoch in range(epochs):
         total = 0
@@ -26,7 +27,7 @@ def train(net, optimizer, criterion, train_loader, val_loader, epochs, use_autoc
 
             optimizer.zero_grad()
             
-            with torch.autocast(device_type=device.type) if use_autocast else nullcontext:
+            with forward_context:
 
                 # Forward pass
                 if len(batch_data) == 2:
@@ -53,8 +54,6 @@ def train(net, optimizer, criterion, train_loader, val_loader, epochs, use_autoc
 
             # Printing
             if (i+1) % 10 == 0:
-                print('Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}'.format(epoch +
-                      1, epochs, i+1, total_step, loss.item()))
                 print(f"Epoch [{epoch+1}/{epochs}], Step [{i+1}/{total_step}], Loss: {loss.item():.4f}")
             if plot:
                 info = {('loss_' + model_name): loss.item()}
@@ -75,11 +74,12 @@ def test(net, criterion, test_loader, use_autocast, device=torch.device('cuda' i
     model = net.to(device)
     criterion.to(device)
     model.eval()
+    forward_context = torch.autocast(device_type=device.type) if use_autocast else nullcontext()
     with torch.no_grad():
         total = 0
         running_loss = 0.0
         for batch_data in test_loader:
-            with torch.autocast(device_type=device.type) if use_autocast else nullcontext:
+            with forward_context:
                 if len(batch_data) == 2:
                     X, y = batch_data
                     X = X.to(device).float()
