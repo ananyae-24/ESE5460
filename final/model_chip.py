@@ -25,6 +25,46 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 from torch.autograd import Variable
 
+class inter():
+    def __init__(self):
+        x = np.arange(0, 448)
+        y = np.arange(0, 448)
+        self.xx, self.yy = np.meshgrid(x, y)
+        self.kernel = self.gaussian_kernel(19, 20)
+
+    def gaussian_kernel(self, kernel_size, sigma):
+        kernel = np.fromfunction(lambda x, y: (1 / (2 * np.pi * sigma**2)) * np.exp(-(
+            (x - kernel_size//2)**2 + (y - kernel_size//2)**2) / (2 * sigma**2)), (kernel_size, kernel_size))
+        normal = kernel / np.sum(kernel)
+        return normal
+
+    def __call__(self, arr):
+        d = arr.diagonal().reshape((arr.shape[0], 1))
+        mask = (d == 0)@((d == 0).T)
+        arr = np.where(mask, np.nan, arr)
+        newarr = convolve(arr, self.kernel)
+        arr[mask == True] = newarr[mask == True]
+        return np.nan_to_num(arr, nan=0.0)
+
+class RandomComplement():
+    def __init__(self, dna_pair_columns, random_seed, transform_prob):
+        """e.g. pairs = ((0, 1), (2, 3))"""
+        self.transform_prob = transform_prob
+        self.dna_pair_columns = dna_pair_columns
+        self.random_generator = np.random.default_rng(random_seed)
+
+    def __call__(self, x: torch.Tensor):
+        if self.random_generator.random() > self.transform_prob:
+            return x
+
+        complement = torch.zeros_like(x)
+        for pair in self.dna_pair_columns:
+            complement[:, :, pair[0]] = x[:, :, pair[1]]
+            complement[:, :, pair[1]] = x[:, :, pair[0]]
+
+        complement[:, :, 4] = x[:, :, 4]
+
+        return complement
 
 class WeightedMSELoss():
     def __init__(self):
@@ -442,3 +482,47 @@ def test(net, criterion, test_loader, device=torch.device('cuda' if torch.cuda.i
 
         print('Accuracy of the network on the test: {}'.format(running_loss/total))
 
+RANDOM_SEED = 42
+BATCH_SIZE = 2
+NUM_EPOCHS = 30
+DATA_PATH = '../data'
+
+transform = thv.transforms.Compose((
+    RandomComplement(((0, 1), (2, 3)), RANDOM_SEED, 0.5)
+))
+
+ctrl = cooler.Cooler(f'{DATA_PATH}/coolers/H1hESC_hg38_4DNFI1O6IL1Q.mapq_30.2048.cool')
+ref = pysam.FastaFile(f'{DATA_PATH}/hg38.ml.fa')
+
+train_set = TorchDataset(f'{DATA_PATH}/cvsDatasets/train_chip.csv', ref, ctrl, transform)
+val_set = TorchDataset(f'{DATA_PATH}/cvsDatasets/val_chip.csv', ref, ctrl)
+test_set = TorchDataset(f'{DATA_PATH}/data/cvsDatasets/test_chip.csv', ref, ctrl)
+train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True)
+val_loader = DataLoader(val_set, batch_size=BATCH_SIZE, shuffle=True)
+test_loader = DataLoader(test_set, batch_size=BATCH_SIZE, shuffle=True)
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(device)
+
+net = Model(5)
+criterion = WeightedMSELoss()
+optimizer = optim.Adam(net.parameters(), lr=0.001)
+# net, optimizer, criterion,filename,epochs
+train_loss_values, validatio_loss = train(
+    net, optimizer, criterion, train_loader, val_loader, NUM_EPOCHS, model_name="Akita")
+torch.save(net.state_dict(), "./model.pth")
+
+plt.plot(list(range(len(train_loss_values))),
+         train_loss_values, label="training error", color="red")
+plt.legend()
+plt.savefig("trainingcurve.png")
+plt.show()
+
+plt.plot(list(range(len(validatio_loss))),
+         validatio_loss, label="val error", color="green")
+plt.legend()
+plt.savefig("valcurve.png")
+plt.show()
+print(f"last training value {train_loss_values[-1]}")
+
+test(net, criterion, test_loader)
