@@ -58,7 +58,7 @@ def train(net, optimizer, criterion, train_loader, val_loader, epochs, use_autoc
             if plot:
                 info = {('loss_' + model_name): loss.item()}
         train_loss_values.append(running_loss/total)
-        validation_values.append(test(model, criterion, val_loader))
+        validation_values.append(test(model, criterion, val_loader, use_autocast))
         if epoch+1 == 10:
             torch.save(model.state_dict(), "./model_10.pth")
         if epoch+1 == 15:
