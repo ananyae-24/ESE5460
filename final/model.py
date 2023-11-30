@@ -357,6 +357,7 @@ class Model(nn.Module):
 
 def train(net, optimizer, criterion, train_loader, val_loader, epochs, root="./", model_name="Akita", plot=False, device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')):
     model = net.to(device)
+    criterion.to(device)
     total_step = len(train_loader)
     overall_step = 0
     train_loss_values = []
@@ -408,6 +409,7 @@ def train(net, optimizer, criterion, train_loader, val_loader, epochs, root="./"
 
 def test(net, criterion, test_loader, device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')):
     model = net.to(device)
+    criterion.to(device)
     model.eval()
     with torch.no_grad():
         total = 0
