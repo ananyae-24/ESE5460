@@ -25,9 +25,7 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 from torch.autograd import Variable
 
-ctrl = cooler.Cooler(
-    '../data/coolers/H1hESC_hg38_4DNFI1O6IL1Q.mapq_30.2048.cool')
-ref = pysam.FastaFile('../data/hg38.ml.fa')
+
 
 
 class inter():
@@ -72,12 +70,28 @@ class RandomComplement():
 
         return complement
 
+class WeightedMSELoss():
+    def __init__(self):
+        dim = 448
+        x = torch.abs(torch.arange(dim).unsqueeze(0)-torch.arange(dim).unsqueeze(1))
+        square_weights = self.diagonal_fun(x)
+        idx = torch.triu_indices(*square_weights.shape, 2)
+        self.weights = square_weights[idx[0], idx[1]].unsqueeze(0).unsqueeze(-1)
 
-RANDOM_SEED = 42
-transform = thv.transforms.Compose((
-    RandomComplement(((0, 1), (2, 3)), RANDOM_SEED, 0.5)
-))
+    def diagonal_fun(self, x, max_weight=36):
+        return 1 + max_weight * torch.sin(x/500*torch.pi)
 
+    def to(self, device):
+        self.weights = self.weights.to(device)
+    
+    def __call__(self, y_pred:torch.Tensor, y_true:torch.Tensor):
+        """
+        Compute weighted mean square error for prediction.
+        Args:
+            y_pred: Predicted labels
+            y_true: True labels
+        """
+        return ((y_true - y_pred)**2 * self.weights).mean()/y_true.shape[0]
 
 class TorchDataset(Dataset):
     def __init__(self, file, fasta, cool, root_dir="./", transform=None):
@@ -99,21 +113,21 @@ class TorchDataset(Dataset):
         self.cooler = cool
         self.i = inter()
 
-    def one_hot_enc(self, seq):
-        ans = []
-        for i in seq:
-            if i == "A":
-                ans.append([1.0, 0, 0, 0, 0])
-            elif i == "T":
-                ans.append([0, 1.0, 0, 0, 0])
-            elif i == "G":
-                ans.append([0, 0, 1.0, 0, 0])
-            elif i == "C":
-                ans.append([0, 0, 0, 1.0, 0])
-            else:
-                ans.append([0, 0, 0, 0, 1.0])
+    # def one_hot_enc(self, seq):
+    #     ans = []
+    #     for i in seq:
+    #         if i == "A":
+    #             ans.append([1.0, 0, 0, 0, 0])
+    #         elif i == "T":
+    #             ans.append([0, 1.0, 0, 0, 0])
+    #         elif i == "G":
+    #             ans.append([0, 0, 1.0, 0, 0])
+    #         elif i == "C":
+    #             ans.append([0, 0, 0, 1.0, 0])
+    #         else:
+    #             ans.append([0, 0, 0, 0, 1.0])
 
-        return np.array(ans).T
+    #     return np.array(ans).T
 
     def norm(self, y):
         return (y-300.0)/300.0
@@ -121,8 +135,8 @@ class TorchDataset(Dataset):
     def flatten(self, mat):
         return torch.tensor(mat[np.triu_indices(mat.shape[0], 2)]).unsqueeze(-1)
 
-    def K(self, p, q, sigma=1):
-        return np.exp(-((p[0]-q[0])**2+(p[1]-q[1])**2)**.5/(2*sigma**2))
+    # def K(self, p, q, sigma=1):
+    #     return np.exp(-((p[0]-q[0])**2+(p[1]-q[1])**2)**.5/(2*sigma**2))
 
     # def cal_value_l(self, p, b, mat, sigma=10):
     #     val, weight = 0, 0
@@ -403,6 +417,7 @@ class Model(nn.Module):
 
 def train(net, optimizer, criterion, train_loader, val_loader, epochs, root="./", model_name="Akita", plot=False, device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')):
     model = net.to(device)
+    criterion = criterion.to(device)
     total_step = len(train_loader)
     overall_step = 0
     train_loss_values = []
@@ -455,6 +470,7 @@ def train(net, optimizer, criterion, train_loader, val_loader, epochs, root="./"
 
 def test(net, criterion, test_loader, device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')):
     model = net.to(device)
+    criterion = criterion.to(device)
     model.eval()
     with torch.no_grad():
         total = 0
@@ -470,21 +486,34 @@ def test(net, criterion, test_loader, device=torch.device('cuda' if torch.cuda.i
 
         print('Accuracy of the network on the test: {}'.format(running_loss/total))
 
-train, val, test = TorchDataset("../data/cvsDatasets/train_chip.csv", ref, ctrl, transform), TorchDataset(
-    "../data/cvsDatasets/val_chip.csv", ref, ctrl), TorchDataset("../data/cvsDatasets/test_chip.csv", ref, ctrl)
-train_loader, val_loader, test_loader = DataLoader(train, batch_size=2, shuffle=True), DataLoader(
-    val, batch_size=2, shuffle=True), DataLoader(test, batch_size=2, shuffle=True)
+RANDOM_SEED = 42
+BATCH_SIZE = 2
+NUM_EPOCHS = 30
+DATA_PATH = '../data'
+
+transform = thv.transforms.Compose((
+    RandomComplement(((0, 1), (2, 3)), RANDOM_SEED, 0.5)
+))
+
+ctrl = cooler.Cooler(f'{DATA_PATH}/coolers/H1hESC_hg38_4DNFI1O6IL1Q.mapq_30.2048.cool')
+ref = pysam.FastaFile(f'{DATA_PATH}/hg38.ml.fa')
+
+train_set = TorchDataset(f'{DATA_PATH}/cvsDatasets/train_chip.csv', ref, ctrl, transform)
+val_set = TorchDataset(f'{DATA_PATH}/cvsDatasets/val_chip.csv', ref, ctrl)
+test_set = TorchDataset(f'{DATA_PATH}/data/cvsDatasets/test_chip.csv', ref, ctrl)
+train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True)
+val_loader = DataLoader(val_set, batch_size=BATCH_SIZE, shuffle=True)
+test_loader = DataLoader(test_set, batch_size=BATCH_SIZE, shuffle=True)
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(device)
 
 net = Model(5)
-criterion = nn.MSELoss()
+criterion = WeightedMSELoss()
 optimizer = optim.Adam(net.parameters(), lr=0.001)
-epochs = 30
 # net, optimizer, criterion,filename,epochs
 train_loss_values, validatio_loss = train(
-    net, optimizer, criterion, train_loader, val_loader, epochs, model_name="Akita")
+    net, optimizer, criterion, train_loader, val_loader, NUM_EPOCHS, model_name="Akita")
 torch.save(net.state_dict(), "./model.pth")
 
 plt.plot(list(range(len(train_loss_values))),

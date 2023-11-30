@@ -24,10 +24,6 @@ import matplotlib.pyplot as plt
 from torch.autograd import Variable
 from typing import Sequence
 
-ctrl = cooler.Cooler(
-    '../data/coolers/H1hESC_hg38_4DNFI1O6IL1Q.mapq_30.2048.cool')
-ref = pysam.FastaFile('../data/hg38.ml.fa')
-
 
 class inter():
     def __init__(self):
@@ -72,28 +68,28 @@ class RandomComplement():
         return complement
 
 
-class WeightedMSE():
+class WeightedMSELoss():
     def __init__(self):
         dim = 448
-        x = torch.abs(torch.arange(dim).unsqueeze(0) -
-                      torch.arange(dim).unsqueeze(1))
+        x = torch.abs(torch.arange(dim).unsqueeze(0)-torch.arange(dim).unsqueeze(1))
         square_weights = self.diagonal_fun(x)
-        self.weigths = square_weights[*torch.triu_indices(
-            *square_weights.shape, 2)].unsqueeze(0).unsqueeze(-1)
-
-        print(self.weigths.shape)
+        idx = torch.triu_indices(*square_weights.shape, 2)
+        self.weights = square_weights[idx[0], idx[1]].unsqueeze(0).unsqueeze(-1)
 
     def diagonal_fun(self, x, max_weight=36):
         return 1 + max_weight * torch.sin(x/500*torch.pi)
 
-    def __call__(self, y_pred: torch.Tensor, y_true: torch.Tensor):
+    def to(self, device):
+        self.weights = self.weights.to(device)
+    
+    def __call__(self, y_pred:torch.Tensor, y_true:torch.Tensor):
         """
         Compute weighted mean square error for prediction.
         Args:
             y_pred: Predicted labels
             y_true: True labels
         """
-        return ((y_true - y_pred)**2 * self.weigths).sum()/y_true.shape[0]
+        return ((y_true - y_pred)**2 * self.weights).mean()/y_true.shape[0]
 
 
 class TorchDataset(Dataset):
@@ -195,16 +191,6 @@ class TorchDataset(Dataset):
             X = self.transform(X)
         sample = (X, y)
         return sample
-
-
-train, val, test = TorchDataset("../data/cvsDatasets/train.csv", ref, ctrl, transform), TorchDataset(
-    "../data/cvsDatasets/val.csv", ref, ctrl), TorchDataset("../data/cvsDatasets/test.csv", ref, ctrl)
-train_loader, val_loader, test_loader = DataLoader(train, batch_size=2, shuffle=True), DataLoader(
-    val, batch_size=2, shuffle=True), DataLoader(test, batch_size=2, shuffle=True)
-
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(device)
-
 
 def plot_hic(x, name="hello"):
     mat = torch.zeros(448, 448)
@@ -439,17 +425,33 @@ def test(net, criterion, test_loader, device=torch.device('cuda' if torch.cuda.i
 
 
 RANDOM_SEED = 42
+BATCH_SIZE = 2
+NUM_EPOCHS = 30
+DATA_PATH = '../data'
+
 transform = thv.transforms.Compose((
     RandomComplement(((0, 1), (2, 3)), RANDOM_SEED, 0.5)
 ))
 
+ctrl = cooler.Cooler(f'{DATA_PATH}/coolers/H1hESC_hg38_4DNFI1O6IL1Q.mapq_30.2048.cool')
+ref = pysam.FastaFile(f'{DATA_PATH}/hg38.ml.fa')
+
+train_set = TorchDataset(f'{DATA_PATH}/cvsDatasets/train_chip.csv', ref, ctrl, transform)
+val_set = TorchDataset(f'{DATA_PATH}/cvsDatasets/val_chip.csv', ref, ctrl)
+test_set = TorchDataset(f'{DATA_PATH}/data/cvsDatasets/test_chip.csv', ref, ctrl)
+train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True)
+val_loader = DataLoader(val_set, batch_size=BATCH_SIZE, shuffle=True)
+test_loader = DataLoader(test_set, batch_size=BATCH_SIZE, shuffle=True)
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(device)
+
 net = Model(5)
-criterion = WeightedMSE()
+criterion = WeightedMSELoss()
 optimizer = optim.SGD(net.parameters(), lr=0.001)
-epochs = 30
 # net, optimizer, criterion,filename,epochs
-train_loss_values, validatio_loss = train(
-    net, optimizer, criterion, train_loader, val_loader, epochs, model_name="Akita")
+train_loss_values, validation_loss = train(
+    net, optimizer, criterion, train_loader, val_loader, NUM_EPOCHS, model_name="Akita")
 torch.save(net.state_dict(), "./model.pth")
 
 plt.plot(list(range(len(train_loss_values))),
@@ -458,8 +460,8 @@ plt.legend()
 plt.savefig("trainingcurve.png")
 plt.show()
 
-plt.plot(list(range(len(validatio_loss))),
-         validatio_loss, label="val error", color="red")
+plt.plot(list(range(len(validation_loss))),
+         validation_loss, label="val error", color="red")
 plt.legend()
 plt.savefig("valcurve.png")
 plt.show()
